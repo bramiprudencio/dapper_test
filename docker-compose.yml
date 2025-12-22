@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Pass123
+      POSTGRES_DB: legislacion_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db:/var/lib/postgresql/data
+  app:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://dapper_user:dapper_password@db:5432/legislacion_db
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+volumes:
+  postgres_data:
+
+  docker run --name db -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=Pass123 -e POSTGRES_DB=legislacion_db -p 5432:5432 -d postgres -v postgres_data:/var/lib/postgresql/data
