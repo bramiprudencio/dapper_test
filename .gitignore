@@ -6,3 +6,5 @@ venv/
 
 # Ignorar base de datos local
 db/
+
+keys.json
