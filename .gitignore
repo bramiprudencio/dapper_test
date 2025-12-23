@@ -26,3 +26,5 @@ logs/
 # --- Sistema Operativo ---
 .DS_Store
 Thumbs.db
+
+db/
