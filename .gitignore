@@ -1,10 +1,28 @@
-# .gitignore
-__pycache__/
-*.pyc
+# --- Seguridad (CRÍTICO) ---
 .env
+.env.local
+config.py
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
 venv/
+.venv/
+env/
 
-# Ignorar base de datos local
-db/
+# --- Datos Locales y Temporales ---
+*.xlsx
+*.csv
+postgres_data/
+metabase_data/
+logs/
 
-keys.json
+# --- IDEs (Configuraciones de editor) ---
+.vscode/
+.idea/
+*.swp
+
+# --- Sistema Operativo ---
+.DS_Store
+Thumbs.db

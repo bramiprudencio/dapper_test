@@ -1,92 +1,111 @@
-import requests
-import pandas as pd
-from openpyxl import load_workbook
-from sqlalchemy import create_engine, Column, Integer, String, MetaData, Table, Text, DateTime
-from sqlalchemy.orm import sessionmaker, declarative_base
-from google import genai
+import schedule
+import time
+import os
+from src.database.connection import init_db, get_db
+from src.database.models import ProyectoLey
+from src.scrapers.colombia import ColombiaScraper
+from src.services.ai_service import ClasificadorIA # <--- IMPORTAR
 
-url_proyectos_colombia  = "https://www.camara.gov.co/proyectos-de-ley/#menu"
+def procesar_pendientes_con_ai(session):
+    """Busca proyectos sin categoría y usa Gemini para clasificarlos"""
+    print("🤖 Iniciando clasificación con IA...")
+    
+    # 1. Buscar filas donde sector_economico sea 'Pendiente AI'
+    # Limitamos a 20 por ejecución para no gastar toda la cuota de la API de golpe
+    pendientes = session.query(ProyectoLey).filter(
+        ProyectoLey.sector_economico == 'Pendiente AI'
+    ).order_by(ProyectoLey.fecha_radicacion.desc()).limit(10).all()
 
-php_url = "https://www.camara.gov.co/wp-admin/admin-ajax.php"
-php_payload = {
-    'action': 'download_proyectos_ley_xlsx',
-    '_ajax_nonce': '376dd2bad5',
-    'tipo': 'All',
-    'estado': 'All',
-    'origen': 'All',
-    'legislatura': 'All',
-    'comision_adv': 'All'
-}
-headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
-}
+    if not pendientes:
+        print("✅ No hay proyectos pendientes de clasificación.")
+        return
 
-DATABASE_URL = "postgresql://admin:Pass123@localhost:5432/legislacion_db"
-engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
-session = Session()
-Base = declarative_base()
-metadata = MetaData()
+    print(f"🧠 Clasificando {len(pendientes)} proyectos...")
+    clasificador = ClasificadorIA()
 
-'''
-response = requests.post(php_url, data=php_payload, headers=headers)
-if response.status_code == 200:
-    with open('proyectos_de_ley_colombia.xlsx', 'wb') as f:
-        f.write(response.content)
-    print("Archivo descargado exitosamente.")
-'''
+    for proyecto in pendientes:
+        try:
+            # Llamada a Gemini
+            nuevo_sector = clasificador.clasificar(proyecto.titulo, proyecto.resumen)
+            
+            # Actualizar BD
+            proyecto.sector_economico = nuevo_sector
+            print(f"   🔹 [{nuevo_sector}] - {proyecto.titulo[:40]}...")
+            
+            # Pequeña pausa para no saturar la API (Rate Limits)
+            time.sleep(1) 
+            
+        except Exception as e:
+            print(f"   ❌ Fallo en proyecto {proyecto.id}: {e}")
 
-wb = load_workbook('proyectos_de_ley_colombia.xlsx').active
-df = pd.read_excel('proyectos_de_ley_colombia.xlsx')
-
-df['Fecha Cámara'] = pd.to_datetime(df['Fecha Cámara'], errors='coerce')
-
-links = []
-
-for cell in wb['P'][1:]:
-
-    if cell.hyperlink:
-        links.append(cell.hyperlink.target)
-    else:
-        links.append(None)
-df['Link'] = links if len(links) == len(df) else None
-print(df.head())
-
-class ProyectoLey(Base):
-    __tablename__ = 'proyectos_ley'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    titulo = Column(String)
-    fecha_radicacion = Column(DateTime)
-    resumen = Column(Text)
-    enlace = Column(String)
-    estado = Column(String)
-    pais = Column(String)
-    sector_economico = Column(String)
-
-Base.metadata.create_all(engine)
-
-for index, row in df.iterrows():
-    titulo = row['Título'] if not pd.isna(row['Título']) else None
-    fecha_radicacion = row['Fecha Cámara'] if not pd.isna(row['Fecha Cámara']) else None
-    resumen = row['Objeto del proyecto'] if not pd.isna(row['Objeto del proyecto']) else None
-    estado = row['Estado de Ley'] if not pd.isna(row['Estado de Ley']) else None
-
-    proyecto = ProyectoLey(
-        titulo=titulo,
-        fecha_radicacion=fecha_radicacion,
-        resumen=resumen,
-        enlace=row['Link'],
-        estado=estado,
-        pais='Colombia',
-        sector_economico='N/A'
-    )
-    session.add(proyecto)
-try:
+    # Guardar cambios
     session.commit()
-    print("✅ Datos insertados exitosamente.")
-except Exception as e:
-    session.rollback()
-    print(f"❌ Error al guardar en BD: {e}")
-finally:
+    print("✨ Clasificación terminada.")
+
+def job_actualizacion():
+    print("\n🕛 Iniciando tarea programada...")
+    init_db()
+    session = get_db()
+    
+    # --- FASE 1: SCRAPING ---
+    scraper = ColombiaScraper()
+    proyectos = scraper.scrape() # Esto trae los 61k diccionarios en memoria
+    
+    print(f"📡 Procesando {len(proyectos)} registros...")
+
+    # Optimización: Traer todos los títulos existentes a memoria en un SET (mucho más rápido que 61k consultas)
+    print("⏳ Cargando caché de títulos existentes...")
+    titulos_existentes = {t[0] for t in session.query(ProyectoLey.titulo).all()}
+    
+    nuevos_para_guardar = []
+    lote_tamano = 1000
+    contador = 0
+
+    for p in proyectos:
+        # Verificación en RAM (Instantánea)
+        if p['titulo'] not in titulos_existentes:
+            nuevo = ProyectoLey(
+                titulo=p['titulo'],
+                fecha_radicacion=p['fecha_radicacion'],
+                resumen=p['resumen'],
+                enlace=p['enlace'],
+                estado=p['estado'],
+                pais=p['pais'],
+                sector_economico="Pendiente AI"
+            )
+            nuevos_para_guardar.append(nuevo)
+            titulos_existentes.add(p['titulo']) # Agregamos al set para evitar duplicados en el mismo excel
+        
+        # Si llenamos el lote, guardamos
+        if len(nuevos_para_guardar) >= lote_tamano:
+            try:
+                session.bulk_save_objects(nuevos_para_guardar)
+                session.commit()
+                contador += len(nuevos_para_guardar)
+                print(f"💾 Guardados {contador} registros...")
+                nuevos_para_guardar = [] # Vaciar lista
+            except Exception as e:
+                session.rollback()
+                print(f"⚠️ Error guardando lote: {e}")
+                # Opcional: Aquí podrías intentar guardar 1 a 1 para aislar el error
+
+    # Guardar el remanente final
+    if nuevos_para_guardar:
+        session.bulk_save_objects(nuevos_para_guardar)
+        session.commit()
+        contador += len(nuevos_para_guardar)
+
+    print(f"✅ Total insertados: {contador}")
     session.close()
+
+if __name__ == "__main__":
+    # Ejecutar una vez al inicio
+    job_actualizacion()
+
+    # Programar
+    schedule.every().day.at("00:00").do(job_actualizacion)
+    
+    print("🚀 Sistema Completo (Scraper + AI) Iniciado.")
+    while True:
+        schedule.run_pending()
+        time.sleep(60)

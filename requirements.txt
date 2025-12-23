@@ -1,6 +1,11 @@
+pandas
 sqlalchemy
+openpyxl
 requests
 beautifulsoup4
 google-generativeai
 pyyaml
 psycopg2-binary
+python-dotenv
+schedule
+google-generativeai

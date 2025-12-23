@@ -1,26 +1,62 @@
 version: '3.8'
 
 services:
+  # 1. Servicio de Base de Datos (PostgreSQL)
   db:
     image: postgres:15-alpine
+    container_name: legislacion_db
     restart: always
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: Pass123
-      POSTGRES_DB: legislacion_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
-      - ./db:/var/lib/postgresql/data
-  app:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal_net
+
+  # 2. Servicio de Scraping (Python)
+  scraper:
     build: .
+    container_name: legislacion_scraper
+    restart: always
     depends_on:
       - db
     environment:
-      DATABASE_URL: postgresql://admin:Pass123@db:5432/legislacion_db
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      DB_HOST: db # Apunta al nombre del servicio 'db'
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      COLOMBIA_AJAX_URL: ${COLOMBIA_AJAX_URL}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+    networks:
+      - internal_net
+
+  # 3. NUEVO: Servicio de Visualización (Metabase)
+  visualizer:
+    image: metabase/metabase:latest
+    container_name: legislacion_visualizer
+    restart: always
+    ports:
+      - "3000:3000" # Accederás vía http://localhost:3000
+    environment:
+      # Esto le dice a Metabase que guarde sus configuraciones internas
+      # en el volumen que montaremos abajo, para no perder tus dashboards.
+      MB_DB_FILE: /metabase-data/metabase.db
     volumes:
-      - ./src:/app/src
-      - ./config:/app/config
+      - metabase_data:/metabase-data
+    depends_on:
+      - db
+    networks:
+      - internal_net
+
 volumes:
   postgres_data:
+  metabase_data: # <-- Nuevo volumen para configuraciones de Metabase
+
+# (Opcional pero recomendado) Una red explícita para orden
+networks:
+  internal_net:
+    driver: bridge
